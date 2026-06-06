@@ -68,6 +68,7 @@ ENV PATH="${VENV_PATH}/bin:${PATH}"
 # 安装系统构建依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    ca-certificates \
     curl \
     busybox \
     jq \
@@ -77,8 +78,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY requirements.in requirements.in
 COPY scripts/uv-pip-compat.sh /usr/local/bin/uv-pip-compat
-RUN python3 -m venv ${VENV_PATH} \
-    && env UV_INSTALL_DIR=/usr/local/bin sh -c "$(curl -LsSf https://astral.sh/uv/install.sh)" \
+RUN echo "=== Step 1/5: Creating venv ===" \
+    && python3 -m venv ${VENV_PATH} \
+    && echo "=== Step 2/5: Installing uv ===" \
+    && curl --retry 3 --retry-delay 5 -LsSf https://astral.sh/uv/install.sh -o /tmp/install-uv.sh \
+    && chmod +x /tmp/install-uv.sh \
+    && UV_INSTALL_DIR=/usr/local/bin /tmp/install-uv.sh \
+    && rm /tmp/install-uv.sh \
+    && echo "=== Step 3/5: Setting up pip compat ===" \
     && chmod +x /usr/local/bin/uv-pip-compat \
     && ln -sf /usr/local/bin/uv ${VENV_PATH}/bin/uv \
     && ln -sf /usr/local/bin/uv-pip-compat ${VENV_PATH}/bin/pip \
@@ -86,9 +93,14 @@ RUN python3 -m venv ${VENV_PATH} \
     && ln -sf /usr/local/bin/uv-pip-compat ${VENV_PATH}/bin/pip3.12 \
     && ln -sf /usr/local/bin/uv-pip-compat ${VENV_PATH}/bin/pip-compile \
     && ln -sf /usr/local/bin/uv-pip-compat ${VENV_PATH}/bin/pip-sync \
-    && pip install "Cython~=3.1.2" \
-    && pip-compile requirements.in -o requirements.txt \
-    && pip install -r requirements.txt
+    && echo "=== Step 4/5: Installing Cython ===" \
+    && ${VENV_PATH}/bin/uv pip install --python ${VENV_PATH}/bin/python "Cython~=3.1.2" \
+    && echo "=== Step 5/5: Compiling & installing requirements ===" \
+    && ${VENV_PATH}/bin/uv pip compile requirements.in -o requirements.txt \
+    && ${VENV_PATH}/bin/uv pip install --python ${VENV_PATH}/bin/python -r requirements.txt \
+    && apt-get autoremove -y \
+    && apt-get clean \
+    && rm -rf /tmp/* /var/lib/apt/lists/* /var/tmp/*
 
 # 下载准备代码
 FROM prepare_package AS prepare_code
