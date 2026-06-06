@@ -17,6 +17,8 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+      - name: Clean Docker cache
+        run: docker builder prune -af
 
       - name: Release version
         id: release_version
@@ -59,6 +61,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           no-cache: true
+          provenance: false
 
       - name: Generate Changelog
         id: changelog
