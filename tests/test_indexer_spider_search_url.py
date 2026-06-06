@@ -1,0 +1,213 @@
+from urllib.parse import parse_qs, urlparse
+from unittest.mock import patch
+
+from app.modules.indexer.spider import SiteSpider
+from app.modules.indexer.spider.haidan import HaiDanSpider
+from app.schemas.types import MediaType
+
+
+def _build_indexer(**kwargs):
+    """
+    构造 SiteSpider 生成搜索 URL 所需的最小站点配置。
+    """
+    indexer = {
+        "id": "test",
+        "name": "测试站点",
+        "domain": "https://example.com/",
+        "search": {
+            "paths": [{"path": "torrents.php"}],
+            "params": {"search": "{keyword}"},
+        },
+        "torrents": {"list": {}, "fields": {}},
+    }
+    indexer.update(kwargs)
+    return indexer
+
+
+def _get_search_url(indexer: dict, keyword: str | list[str], mtype: MediaType = None) -> str:
+    """
+    调用 SiteSpider 私有 URL 构造逻辑，避免真实请求站点。
+    """
+    spider = SiteSpider(indexer=indexer, keyword=keyword, mtype=mtype)
+    return spider._SiteSpider__get_search_url()
+
+
+def _get_haidan_params(keyword: str | None, mtype: MediaType = None) -> dict:
+    """
+    调用 HaiDanSpider 私有参数构造逻辑，避免真实请求站点。
+    """
+    spider = HaiDanSpider(indexer={"domain": "https://www.haidan.video/", "name": "海胆"})
+    params = parse_qs(spider._HaiDanSpider__get_params(keyword, mtype), keep_blank_values=True)
+    return {key: values[0] for key, values in params.items()}
+
+
+def test_eastgame_imdb_search_uses_imdb_area():
+    """
+    TLF 支持 IMDb ID 搜索时应使用站点配置的 IMDb 搜索区域。
+    """
+    indexer = _build_indexer(
+        id="eastgame",
+        domain="https://pt.eastgame.org/",
+        search={
+            "paths": [{"path": "torrents.php"}],
+            "params": {
+                "search_area": 4,
+                "search": "{keyword}",
+            },
+        },
+    )
+
+    parsed_url = urlparse(_get_search_url(indexer, "tt16311594"))
+    query = parse_qs(parsed_url.query)
+
+    assert parsed_url.geturl().startswith("https://pt.eastgame.org/torrents.php?")
+    assert query["search"] == ["tt16311594"]
+    assert query["search_area"] == ["4"]
+
+
+def test_eastgame_title_search_keeps_title_area():
+    """
+    TLF 普通标题搜索不应误用 IMDb 搜索区域。
+    """
+    indexer = _build_indexer(
+        id="eastgame",
+        domain="https://pt.eastgame.org/",
+        search={
+            "paths": [{"path": "torrents.php"}],
+            "params": {
+                "search_area": 4,
+                "search": "{keyword}",
+            },
+        },
+    )
+
+    query = parse_qs(urlparse(_get_search_url(indexer, "普通标题")).query)
+
+    assert query["search"] == ["普通标题"]
+    assert query["search_area"] == ["0"]
+
+
+def test_eastgame_batch_search_keeps_title_area():
+    """
+    TLF 批量搜索不是单个 IMDb ID，不能触发 IMDb 搜索区域。
+    """
+    indexer = _build_indexer(
+        id="eastgame",
+        domain="https://pt.eastgame.org/",
+        search={
+            "paths": [{"path": "torrents.php"}],
+            "params": {
+                "search_area": 4,
+                "search": "{keyword}",
+            },
+        },
+    )
+
+    query = parse_qs(urlparse(_get_search_url(indexer, ["tt1234567", "tt7654321"])).query)
+
+    assert query["search"] == ["tt1234567 tt7654321"]
+    assert query["search_mode"] == ["1"]
+    assert query["search_area"] == ["0"]
+
+
+def test_ttg_imdb_search_formats_keyword_and_keeps_existing_query():
+    """
+    TTG 的 IMDb 搜索需要 tt 前缀转换，并且路径自带查询参数不能生成双问号。
+    """
+    indexer = _build_indexer(
+        id="ttg",
+        domain="https://totheglory.im/",
+        search={
+            "paths": [{"path": "browse.php?c=M"}],
+            "params": {
+                "search_field": "{keyword}",
+                "c": "M",
+            },
+            "imdbid_format": "imdb{imdbid_num}",
+        },
+        category={
+            "field": "search_field",
+            "delimiter": " 分类:",
+            "movie": [{"id": "电影DVDRip", "cat": "Movies/SD"}],
+        },
+    )
+
+    search_url = _get_search_url(indexer, "tt0049406", MediaType.MOVIE)
+    query = parse_qs(urlparse(search_url).query)
+
+    assert search_url.count("?") == 1
+    assert query["c"] == ["M"]
+    assert query["search_field"] == ["imdb0049406 分类:电影DVDRip"]
+
+
+def test_ttg_title_search_does_not_format_keyword():
+    """
+    TTG 普通标题搜索不能被 IMDb ID 格式化规则影响。
+    """
+    indexer = _build_indexer(
+        id="ttg",
+        domain="https://totheglory.im/",
+        search={
+            "paths": [{"path": "browse.php?c=M"}],
+            "params": {
+                "search_field": "{keyword}",
+                "c": "M",
+            },
+            "imdbid_format": "imdb{imdbid_num}",
+        },
+        category={
+            "field": "search_field",
+            "delimiter": " 分类:",
+            "movie": [{"id": "电影DVDRip", "cat": "Movies/SD"}],
+        },
+    )
+
+    query = parse_qs(urlparse(_get_search_url(indexer, "The Movie", MediaType.MOVIE)).query)
+
+    assert query["search_field"] == ["The Movie 分类:电影DVDRip"]
+
+
+def test_haidan_empty_keyword_uses_blank_search_value():
+    """
+    海胆空关键词浏览不能把 Python None 编码进 search 参数。
+    """
+    params = _get_haidan_params(None)
+
+    assert params["search"] == ""
+    assert params["search_area"] == "0"
+
+
+def test_python_spider_remove_does_not_pollute_other_fields():
+    """
+    Python fallback 解析带 remove 的字段时不能影响同一行后续字段选择。
+    """
+    indexer = _build_indexer(
+        torrents={
+            "list": {"selector": "table.torrents > tr"},
+            "fields": {
+                "title": {"selector": "a.title"},
+                "description": {
+                    "selector": "td.desc",
+                    "remove": "span.noise",
+                },
+                "imdbid": {"selector": "span.noise"},
+            },
+        },
+    )
+    html = """
+    <table class="torrents">
+      <tr>
+        <td><a class="title">Movie.Title</a></td>
+        <td class="desc">Main description <span class="noise">tt1234567</span></td>
+      </tr>
+    </table>
+    """
+
+    with patch("app.modules.indexer.spider.rust_accel.parse_indexer_torrents", return_value=None):
+        result = SiteSpider(indexer).parse(html)
+
+    assert result == [{
+        "title": "Movie.Title",
+        "description": "Main description",
+        "imdbid": "tt1234567",
+    }]
