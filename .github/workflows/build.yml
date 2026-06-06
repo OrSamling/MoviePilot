@@ -54,15 +54,11 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile
-          platforms: |
-            linux/amd64
-            linux/arm64/v8
-            linux/arm/v7
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=moviepilot-docker,version=2
-          cache-to: type=gha,scope=moviepilot-docker,mode=max,version=2
+          no-cache: true
 
       - name: Generate Changelog
         id: changelog
